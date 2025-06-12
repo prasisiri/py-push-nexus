@@ -94,22 +94,229 @@ user = connector.execute_query(
 
 The utility follows specific workflows for different environments and operations:
 
-### Publishing & Installation Flow
-1. **Developer** builds and publishes package to Nexus
-2. **CI/CD Pipeline** handles automated builds and testing
-3. **End Users** install from Nexus repository
-4. **Applications** integrate and use the utility
+### 1. Publishing & Installation Flow
 
-### Environment-Aware Usage Flow
-1. **Local Development**: Auto-detects environment → Reads properties file → Connects to dev database
-2. **Production**: Detects prod environment → Fetches credentials from Vault → Connects securely to prod database
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant Build as Build System
+    participant Nexus as Nexus Repository
+    participant User as End User
+    participant App as User Application
 
-### Complete Lifecycle
-- **Green Path**: Development workflow (code → CI/CD → Nexus)
-- **Blue Path**: Local usage (properties file → dev database)
-- **Red Path**: Production usage (Vault → secure prod database)
+    Note over Dev, Nexus: Publishing Process
+    
+    Dev->>Build: Run nexus-publish.py
+    activate Build
+    
+    Build->>Build: Clean previous artifacts<br/>(rm -rf dist/ build/)
+    Build->>Build: Build package<br/>(python -m build)
+    
+    Note over Build: Creates wheel & tar.gz
+    
+    Build->>Nexus: Upload package<br/>(twine upload)
+    activate Nexus
+    
+    Nexus-->>Build: Upload successful
+    deactivate Nexus
+    
+    Build-->>Dev: ✅ Package published
+    deactivate Build
+    
+    Note over Dev, App: Consumption Process
+    
+    User->>Nexus: pip install connect-postgres-utility<br/>--extra-index-url
+    activate Nexus
+    
+    Nexus-->>User: Download package
+    deactivate Nexus
+    
+    User->>App: Import and use utility
+    activate App
+    
+    App-->>User: Database operations ready
+    deactivate App
+```
 
-*See the sequence diagrams in the project documentation for detailed visual flows.*
+### 2. Environment-Aware Usage Flow (Local vs Production)
+
+```mermaid
+sequenceDiagram
+    participant User as User Code
+    participant Connector as PostgreSQLConnector
+    participant Config as Config Manager
+    participant LocalFile as Local Properties
+    participant Vault as HashiCorp Vault
+    participant RDS as AWS RDS PostgreSQL
+
+    Note over User, RDS: Local Development Flow
+    
+    User->>Connector: PostgreSQLConnector()
+    activate Connector
+    
+    Connector->>Config: Config(environment=auto-detect)
+    activate Config
+    
+    Config->>Config: _detect_environment()<br/>(checks env vars)
+    Config-->>Connector: environment='local'
+    
+    Connector->>Config: get_credentials()
+    Config->>LocalFile: Read database.properties
+    activate LocalFile
+    
+    LocalFile-->>Config: {host, port, database,<br/>username, password}
+    deactivate LocalFile
+    
+    Config-->>Connector: credentials
+    deactivate Config
+    
+    User->>Connector: connect()
+    Connector->>RDS: psycopg2.connect(credentials)
+    activate RDS
+    
+    RDS-->>Connector: connection established
+    deactivate RDS
+    
+    User->>Connector: execute_query("SELECT * FROM users")
+    Connector->>RDS: SQL Query
+    activate RDS
+    
+    RDS-->>Connector: query results
+    deactivate RDS
+    
+    Connector-->>User: formatted results
+    deactivate Connector
+    
+    Note over User, RDS: Production Flow with Vault
+    
+    User->>Connector: PostgreSQLConnector(environment='prod')
+    activate Connector
+    
+    Connector->>Config: Config(environment='prod')
+    activate Config
+    
+    User->>Connector: connect()
+    Connector->>Config: get_credentials()
+    
+    Config->>Vault: hvac.Client(vault_addr, token)
+    activate Vault
+    
+    Vault->>Vault: authenticate()
+    Vault-->>Config: authenticated client
+    
+    Config->>Vault: read_secret_version(db_vault_path)
+    Vault-->>Config: {host, port, database,<br/>username, password}
+    deactivate Vault
+    
+    Config-->>Connector: credentials
+    deactivate Config
+    
+    Connector->>RDS: psycopg2.connect(vault_credentials)
+    activate RDS
+    
+    RDS-->>Connector: secure connection established
+    deactivate RDS
+    
+    Connector-->>User: production connection ready
+    deactivate Connector
+```
+
+### 3. Complete Lifecycle Flow
+
+```mermaid
+sequenceDiagram
+    participant Dev as Developer
+    participant Git as Git Repository
+    participant CI as CI/CD Pipeline
+    participant Nexus as Nexus Repository
+    participant DevUser as Developer User
+    participant ProdUser as Production User
+    participant Vault as Vault
+    participant LocalConfig as Local Config
+    participant RDS as AWS RDS
+
+    Note over Dev, RDS: Complete Lifecycle Flow
+
+    rect rgb(245, 245, 245)
+        Note over Dev, Nexus: Package Development & Publishing
+        
+        Dev->>Dev: Create utility code
+        Dev->>Git: git push
+        activate Git
+        
+        Git->>CI: Trigger build pipeline
+        activate CI
+        
+        CI->>CI: Run tests<br/>Build package
+        CI->>Nexus: Publish to repository<br/>(twine upload)
+        activate Nexus
+        
+        Nexus-->>CI: Package published
+        deactivate Nexus
+        deactivate CI
+        deactivate Git
+    end
+
+    rect rgb(230, 255, 230)
+        Note over DevUser, RDS: Development Usage
+        
+        DevUser->>Nexus: pip install connect-postgres-utility
+        activate Nexus
+        Nexus-->>DevUser: Package installed
+        deactivate Nexus
+        
+        DevUser->>LocalConfig: Create database.properties<br/>{host, user, password}
+        activate LocalConfig
+        
+        DevUser->>DevUser: from connect_postgres import PostgreSQLConnector
+        DevUser->>DevUser: connector = PostgreSQLConnector()
+        
+        DevUser->>LocalConfig: Load local credentials
+        LocalConfig-->>DevUser: Database credentials
+        deactivate LocalConfig
+        
+        DevUser->>RDS: Connect to development DB
+        activate RDS
+        RDS-->>DevUser: Connection established
+        
+        DevUser->>RDS: Execute queries
+        RDS-->>DevUser: Query results
+        deactivate RDS
+    end
+
+    rect rgb(255, 230, 230)
+        Note over ProdUser, RDS: Production Usage
+        
+        ProdUser->>Nexus: pip install connect-postgres-utility<br/>(in production environment)
+        activate Nexus
+        Nexus-->>ProdUser: Package installed
+        deactivate Nexus
+        
+        ProdUser->>Vault: Store DB credentials<br/>at secret/database/postgresql
+        activate Vault
+        
+        ProdUser->>ProdUser: Set environment variables<br/>ENVIRONMENT=prod<br/>VAULT_ADDR, VAULT_TOKEN
+        
+        ProdUser->>ProdUser: connector = PostgreSQLConnector()
+        ProdUser->>Vault: Fetch credentials from Vault
+        Vault-->>ProdUser: Secure credentials
+        deactivate Vault
+        
+        ProdUser->>RDS: Connect to production DB<br/>(with SSL/secure connection)
+        activate RDS
+        RDS-->>ProdUser: Secure connection established
+        
+        ProdUser->>RDS: Execute production queries
+        RDS-->>ProdUser: Production data
+        deactivate RDS
+    end
+```
+
+### Flow Summary
+
+- **🔵 Development Path**: Local config files → Development database
+- **🔴 Production Path**: Vault credentials → Secure production database  
+- **⚫ Publishing Path**: Code → CI/CD → Nexus → User installation
 
 ## ⚙️ Configuration
 
