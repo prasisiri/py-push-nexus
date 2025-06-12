@@ -1,0 +1,5 @@
+include README.md
+include LICENSE
+recursive-include config *.properties
+recursive-include examples *.py
+recursive-exclude tests * 
